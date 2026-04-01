@@ -1,0 +1,8 @@
+{
+  "candidate_name": "String",
+  "match_score": "Integer (0-100)",
+  "verdict": "String (e.g., 'Strong Match', 'Needs Work')",
+  "missing_keywords": ["List", "of", "missing", "industry", "terms"],
+  "formatting_errors": ["List", "of", "resume", "design", "flaws"],
+  "actionable_feedback": "String (One paragraph of brutal, honest advice on how to improve)"
+}
