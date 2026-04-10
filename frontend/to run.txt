@@ -1,0 +1,2 @@
+cd Desktop/resume-analyzer 
+python -m streamlit run app.py
