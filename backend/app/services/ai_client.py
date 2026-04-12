@@ -1,152 +1,91 @@
 """
-AI Service Client - Communicates with Daniyal's AI service
+AI Service Client - Calls Groq LLM directly for resume analysis.
+No separate AI microservice needed — this calls Groq inline.
 
-This is the bridge between Fardeen's API (this backend) and Daniyal's AI.
-
-CURRENT STATUS: Returns mock data for testing
-TODO FOR DANIYAL: Replace the mock response with actual AI API calls
-
-How it works:
-1. Receives resume text and job description from the route
-2. Sends it to Daniyal's AI service (via HTTP POST)
-3. Gets back the analysis results
-4. Returns the results to be sent to the frontend
+Setup:
+    pip install groq
+    Set GROQ_API_KEY in your .env file
+    Get free key at: https://console.groq.com
 """
 
-import httpx
+import json
+import os
+from groq import AsyncGroq
 from app.models import AIServiceResponse
 
 
+SYSTEM_PROMPT = """You are a brutally honest, expert resume analyst and hiring consultant.
+Analyze the provided resume against the job description and return ONLY a valid JSON object.
+No preamble, no markdown, no explanation — raw JSON only.
+
+JSON structure to return:
+{
+  "candidate_name": "Full name extracted from resume, or 'Unknown Candidate'",
+  "match_score": <integer 0-100>,
+  "verdict": "<one of: 'Strong Match', 'Good Match', 'Needs Work', 'Poor Match'>",
+  "missing_keywords": ["keyword1", "keyword2", "...up to 6 items"],
+  "formatting_errors": ["error1", "error2", "...up to 5 items"],
+  "actionable_feedback": "One dense, honest paragraph of specific advice to improve this resume for this role.",
+  "ats_approved": <true or false>,
+  "ats_feedback": "One sentence on ATS compatibility."
+}
+
+Scoring guide:
+- 80-100: Strong match, most requirements met
+- 60-79:  Good match, some gaps
+- 40-59:  Needs significant work
+- 0-39:   Poor fit for this role
+"""
+
+
 class AIClient:
-    """
-    Client for calling the AI analysis service.
 
-    Think of this as a "phone" that your backend uses to call Daniyal's AI.
-    Instead of making the AI logic complicated in your routes,
-    we keep it separate here so the code stays clean.
-    """
-
-    def __init__(self, ai_service_url: str):
-        """
-        Initialize the AI client.
-
-        Args:
-            ai_service_url: The URL where Daniyal's AI service is running
-                           (e.g., http://localhost:8001)
-        """
-        self.ai_service_url = ai_service_url
-        # Create an HTTP client for making async requests
-        self._client = httpx.AsyncClient(timeout=30.0)
+    def __init__(self, ai_service_url: str = ""):
+        # ai_service_url param kept for compatibility with Fardeen's routes
+        # We don't use it — Groq is called directly
+        self._client = AsyncGroq(
+            api_key=os.environ.get("GROQ_API_KEY")
+        )
 
     async def analyze(
         self,
         resume_text: str,
         job_description: str
     ) -> AIServiceResponse:
-        """
-        Send resume and job description to AI service for analysis.
 
-        This is the main method that routes will call.
+        user_message = f"""RESUME:
+{resume_text}
 
-        Args:
-            resume_text: The text extracted from the uploaded resume
-            job_description: The job description to match against
+---
 
-        Returns:
-            AIServiceResponse: The analysis results from the AI
+JOB DESCRIPTION:
+{job_description if job_description.strip() else "No job description provided. Evaluate resume quality generally."}
+"""
 
-        =====================================================================
-        TODO FOR DANIYAL:
-        Replace the mock response below with this actual API call:
-
-        response = await self._client.post(
-            f"{self.ai_service_url}/analyze",
-            json={
-                "resume_text": resume_text,
-                "job_description": job_description
-            }
+        response = await self._client.chat.completions.create(
+            model="llama-3.3-70b-versatile",  # Fast, free on Groq
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.3,      # Low temp = consistent, structured output
+            max_tokens=1024,
+            response_format={"type": "json_object"}  # Forces JSON output
         )
-        response.raise_for_status()
-        return AIServiceResponse(**response.json())
-        =====================================================================
-        """
 
-        # ================================================================
-        # MOCK RESPONSE - For testing before AI service is ready
-        # Daniyal will replace this with actual AI call above
-        # ================================================================
+        raw = response.choices[0].message.content
+        data = json.loads(raw)
 
-        # Simulate processing time (optional, for testing)
-        # await asyncio.sleep(0.5)
-
-        # Extract candidate name from resume (simple placeholder)
-        candidate_name = self._extract_name(resume_text)
-
-        # Determine verdict based on score
-        match_score = 72  # Mock score
-        if match_score >= 80:
-            verdict = "Strong Match"
-        elif match_score >= 60:
-            verdict = "Good Match"
-        elif match_score >= 40:
-            verdict = "Needs Work"
-        else:
-            verdict = "Poor Match"
-
-        # Return mock analysis result
         return AIServiceResponse(
-            candidate_name=candidate_name,
-            match_score=match_score,
-            verdict=verdict,
-            missing_keywords=[
-                "cloud infrastructure",
-                "agile methodology",
-                "system design"
-            ],
-            formatting_errors=[
-                "Inconsistent bullet point formatting",
-                "Missing quantifiable achievements"
-            ],
-            actionable_feedback=(
-                "Your resume demonstrates solid technical foundations, "
-                "but needs stronger emphasis on measurable impact. "
-                "Add specific numbers to your achievements (e.g., 'improved performance by 40%'). "
-                "Include any cloud experience (AWS, GCP, Azure) as it's highly valued. "
-                "Consider restructuring your projects section to highlight the most relevant work first."
-            ),
-            ats_approved=True,
-            ats_feedback=(
-                "Your resume is ATS-friendly. It uses standard section headers "
-                "and a clean format that most applicant tracking systems can parse."
-            )
+            candidate_name=data.get("candidate_name", "Unknown Candidate"),
+            match_score=int(data.get("match_score", 0)),
+            verdict=data.get("verdict", "Needs Work"),
+            missing_keywords=data.get("missing_keywords", []),
+            formatting_errors=data.get("formatting_errors", []),
+            actionable_feedback=data.get("actionable_feedback", ""),
+            ats_approved=bool(data.get("ats_approved", False)),
+            ats_feedback=data.get("ats_feedback", "")
         )
-
-    def _extract_name(self, resume_text: str) -> str:
-        """
-        Simple name extraction from resume text.
-
-        This is a very basic placeholder - it just takes the first line
-        if it looks like a name (short enough).
-
-        TODO: Daniyal's AI will do proper NLP-based name extraction.
-
-        Args:
-            resume_text: The full resume text
-
-        Returns:
-            str: Extracted name or "Unknown Candidate"
-        """
-        lines = resume_text.strip().split('\n')
-        if lines:
-            # Assume first non-empty line might contain the name
-            first_line = lines[0].strip()
-            if len(first_line) < 50:  # Names are usually short
-                return first_line
-        return "Unknown Candidate"
 
     async def close(self):
-        """
-        Close the HTTP client session.
-        Should be called when the application shuts down.
-        """
         await self._client.aclose()
